@@ -59,14 +59,28 @@ export default function Workspace({ tool }) {
     }
   }, []);
 
-  // Reprocess all ready items whenever settings or tool change
+  // A fingerprint of the current output settings. If an item was processed
+  // under a different fingerprint, it's stale and needs redoing.
+  const settingsKey = JSON.stringify({
+    tool,
+    format: settings.format,
+    quality: settings.quality,
+    resize: settings.resize,
+    crop: settings.crop,
+  });
+
+  // Changes whenever a new image finishes decoding (or one is removed), which
+  // is what kicks off processing for freshly-dropped files.
+  const decodedKey = items.filter((it) => it.srcData).map((it) => it.id).join('|');
+
+  // Process anything that is decoded but not yet rendered under these settings.
   useEffect(() => {
     const myJob = ++jobId.current;
-    const ready = items.filter((it) => it.status === 'ready' || it.status === 'done');
-    if (!ready.length) return;
+    const stale = items.filter((it) => it.srcData && it.doneKey !== settingsKey);
+    if (!stale.length) return;
 
     (async () => {
-      for (const it of ready) {
+      for (const it of stale) {
         if (jobId.current !== myJob) return; // superseded by newer settings
         try {
           const result = await processImage(it.srcData, {
@@ -77,15 +91,21 @@ export default function Workspace({ tool }) {
           setItems((prev) => prev.map((p) => {
             if (p.id !== it.id) return p;
             if (p.out) URL.revokeObjectURL(p.out);
-            return { ...p, out: result.url, outSize: result.size, outExt: result.ext, status: 'done' };
+            return {
+              ...p,
+              out: result.url, outSize: result.size, outExt: result.ext,
+              status: 'done', doneKey: settingsKey,
+            };
           }));
         } catch {
-          setItems((prev) => prev.map((p) => p.id === it.id ? { ...p, status: 'error', error: 'Could not process this image.' } : p));
+          setItems((prev) => prev.map((p) => p.id === it.id
+            ? { ...p, status: 'error', error: 'Could not process this image.' }
+            : p));
         }
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings, tool, items.length]);
+  }, [settingsKey, decodedKey]);
 
   const removeItem = (id) => setItems((prev) => {
     const it = prev.find((p) => p.id === id);
@@ -223,13 +243,55 @@ export default function Workspace({ tool }) {
 
 function SingleView({ item }) {
   if (item.status === 'error') return <ErrorCard message={item.error} />;
-  if (!item.out) return <Skeleton />;
+
+  // Nothing to compare against yet — show the original right away with a quiet
+  // working note, rather than an empty box. The first run is slower because the
+  // WASM codec has to download; the user should still see their image instantly.
+  if (!item.out) {
+    return (
+      <div style={{
+        position: 'relative', width: '100%', aspectRatio: '4/3', maxHeight: '520px',
+        borderRadius: '16px', overflow: 'hidden', background: 'var(--soft)',
+      }}>
+        <img
+          src={item.srcUrl}
+          alt=""
+          style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+        />
+        <div style={{
+          position: 'absolute', bottom: '12px', left: '12px',
+          background: 'rgba(0,0,0,0.72)', color: '#fff',
+          padding: '8px 14px', borderRadius: '999px',
+          fontSize: '13px', fontWeight: 600,
+          display: 'flex', alignItems: 'center', gap: '8px',
+        }}>
+          <Spinner /> Compressing…
+        </div>
+      </div>
+    );
+  }
+
   return (
     <SplitSlider
       beforeUrl={item.srcUrl}
       afterUrl={item.out}
       beforeSize={item.originalSize}
       afterSize={item.outSize}
+    />
+  );
+}
+
+function Spinner() {
+  return (
+    <span
+      aria-hidden="true"
+      style={{
+        width: '12px', height: '12px', borderRadius: '50%',
+        border: '2px solid rgba(255,255,255,0.35)',
+        borderTopColor: '#fff',
+        display: 'inline-block',
+        animation: 'kk-spin 0.7s linear infinite',
+      }}
     />
   );
 }
@@ -275,10 +337,6 @@ function BulkGrid({ items, onRemove, onDownload }) {
       ))}
     </div>
   );
-}
-
-function Skeleton() {
-  return <div style={{ width: '100%', aspectRatio: '4/3', maxHeight: '520px', background: 'var(--soft)', borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--muted)', fontSize: '13px' }}>Processing…</div>;
 }
 
 function ErrorCard({ message }) {
