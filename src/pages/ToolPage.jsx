@@ -1,21 +1,32 @@
-import { useEffect } from 'react';
+import { useEffect, lazy, Suspense } from 'react';
 import { useParams, Navigate, Link, useLocation } from 'react-router-dom';
 import { TOOL_PAGES, SLUGS } from './toolConfig';
 import Workspace from '../components/Workspace';
+// Lazy: pdf-lib + pdf.js are heavy (~900 KB). Only load them on PDF pages,
+// so someone compressing an image never downloads them.
+const PdfWorkspace = lazy(() => import('../components/PdfWorkspace'));
 import Footer from '../components/Footer';
 
-const NAV = [
+const IMAGE_NAV = [
   ['image-compressor', 'Compress'],
   ['image-converter', 'Convert'],
   ['image-resizer', 'Resize'],
   ['image-cropper', 'Crop'],
 ];
 
-// Cross-links at the foot of the copy — includes the bulk page so it stays
-// internally linked and crawlable even though it's not in the top nav.
+const PDF_NAV = [
+  ['merge-pdf', 'Merge'],
+  ['split-pdf', 'Split'],
+  ['compress-pdf', 'Compress'],
+  ['pdf-to-jpg', 'To JPG'],
+  ['jpg-to-pdf', 'From JPG'],
+];
+
+// Every page, for the crawlable cross-links at the foot of the copy.
 const CROSSLINKS = [
-  ...NAV,
+  ...IMAGE_NAV,
   ['bulk-image-compressor', 'Compress in bulk'],
+  ...PDF_NAV.map(([s, l]) => [s, `${l} PDF`]),
 ];
 
 export default function ToolPage() {
@@ -32,6 +43,8 @@ export default function ToolPage() {
 
   if (!page) return <Navigate to="/tools/image-compressor" replace />;
 
+  const isPdf = page.kind === 'pdf';
+
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
       {/* Top bar */}
@@ -41,11 +54,16 @@ export default function ToolPage() {
             <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '30px', height: '30px', borderRadius: '8px', background: 'var(--brand)', color: '#fff', fontSize: '15px', fontWeight: 600, letterSpacing: '-0.03em' }}>KK</span>
             Simple <span style={{ color: 'var(--muted)', fontWeight: 400 }}>Image Tools</span>
           </Link>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', overflowX: 'auto' }}>
+          <div style={{ display: 'flex', gap: '2px', background: 'var(--chip)', padding: '3px', borderRadius: '999px', flexShrink: 0 }}>
+            <Link to="/tools/image-compressor" style={suiteTab(!isPdf)}>Images</Link>
+            <Link to="/tools/merge-pdf" style={suiteTab(isPdf)}>PDF</Link>
+          </div>
           <nav style={{
             display: 'flex', gap: '4px', overflowX: 'auto',
             background: 'var(--chip)', padding: '4px', borderRadius: '999px',
           }}>
-            {NAV.map(([s, label]) => (
+            {(isPdf ? PDF_NAV : IMAGE_NAV).map(([s, label]) => (
               <Link key={s} to={`/tools/${s}`} style={{
                 textDecoration: 'none', fontSize: '13px', fontWeight: 600,
                 padding: '8px 16px', borderRadius: '999px', whiteSpace: 'nowrap',
@@ -55,6 +73,7 @@ export default function ToolPage() {
               }}>{label}</Link>
             ))}
           </nav>
+          </div>
         </div>
       </header>
 
@@ -65,7 +84,13 @@ export default function ToolPage() {
           <p style={{ margin: 0, fontSize: '17px', color: 'var(--muted)', maxWidth: '620px' }}>{page.tagline}</p>
         </div>
 
-        <Workspace tool={page.tool} key={slug} />
+        {isPdf ? (
+          <Suspense fallback={<LoadingPanel />}>
+            <PdfWorkspace tool={page.tool} key={slug} />
+          </Suspense>
+        ) : (
+          <Workspace tool={page.tool} key={slug} />
+        )}
 
         {/* SEO copy */}
         <section style={{ maxWidth: '680px', margin: '56px 0 0' }}>
@@ -103,6 +128,28 @@ function Wave() {
         fill="var(--brand)" opacity="0.9" />
     </svg>
   );
+}
+
+function LoadingPanel() {
+  return (
+    <div style={{
+      height: '440px', borderRadius: '16px', background: 'var(--soft)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      color: 'var(--muted)', fontSize: '14px',
+    }}>
+      Loading…
+    </div>
+  );
+}
+
+function suiteTab(active) {
+  return {
+    textDecoration: 'none', fontSize: '12px', fontWeight: 700,
+    padding: '7px 13px', borderRadius: '999px', whiteSpace: 'nowrap',
+    letterSpacing: '0.02em',
+    color: active ? 'var(--paper)' : 'var(--muted)',
+    background: active ? 'var(--ink)' : 'transparent',
+  };
 }
 
 function setMeta(name, content) {

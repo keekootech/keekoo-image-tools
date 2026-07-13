@@ -5,14 +5,15 @@ import { useRef, useState, useEffect } from 'react';
  * drifting particles behind it (Squoosh-style, in brand red).
  * In "compact" mode it's a small dashed strip for adding more files.
  */
-export default function DropZone({ onFiles, compact }) {
+export default function DropZone({ onFiles, compact, accept = 'image' }) {
+  const isPdf = accept === 'pdf';
   const inputRef = useRef(null);
   const [over, setOver] = useState(false);
 
   const pick = (files) => {
-    const arr = Array.from(files).filter(
-      (f) => f.type.startsWith('image/') || /\.(jpe?g|png|webp|avif|heic)$/i.test(f.name)
-    );
+    const arr = Array.from(files).filter((f) => isPdf
+      ? (f.type === 'application/pdf' || /\.pdf$/i.test(f.name))
+      : (f.type.startsWith('image/') || /\.(jpe?g|png|webp|avif|heic)$/i.test(f.name)));
     if (arr.length) onFiles(arr);
   };
 
@@ -22,7 +23,7 @@ export default function DropZone({ onFiles, compact }) {
     <input
       ref={inputRef}
       type="file"
-      accept="image/*"
+      accept={isPdf ? "application/pdf" : "image/*"}
       multiple
       hidden
       onChange={(e) => { pick(e.target.files); e.target.value = ''; }}
@@ -50,15 +51,15 @@ export default function DropZone({ onFiles, compact }) {
         }}
       >
         {commonInput}
-        <p style={{ margin: 0, fontSize: '14px', fontWeight: 600 }}>Add more images</p>
+        <p style={{ margin: 0, fontSize: '14px', fontWeight: 600 }}>{isPdf ? 'Add another PDF' : 'Add more images'}</p>
       </div>
     );
   }
 
-  return <HeroDrop onOpen={openPicker} onFiles={pick} over={over} setOver={setOver}>{commonInput}</HeroDrop>;
+  return <HeroDrop onOpen={openPicker} onFiles={pick} over={over} setOver={setOver} isPdf={isPdf}>{commonInput}</HeroDrop>;
 }
 
-function HeroDrop({ onOpen, onFiles, over, setOver, children }) {
+function HeroDrop({ onOpen, onFiles, over, setOver, children, isPdf }) {
   const canvasRef = useRef(null);
   const blobRef = useRef(null);
   const wrapRef = useRef(null);
@@ -165,7 +166,7 @@ function HeroDrop({ onOpen, onFiles, over, setOver, children }) {
         </svg>
         <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', color: '#fff' }}>
           <div style={{ fontSize: '30px', lineHeight: 1, marginBottom: '10px' }} aria-hidden="true">＋</div>
-          <div style={{ fontSize: '17px', fontWeight: 600 }}>Drop images here</div>
+          <div style={{ fontSize: '17px', fontWeight: 600 }}>{isPdf ? 'Drop PDFs here' : 'Drop images here'}</div>
           <div style={{ fontSize: '13px', opacity: 0.9, marginTop: '2px' }}>or tap to choose</div>
         </div>
       </div>
