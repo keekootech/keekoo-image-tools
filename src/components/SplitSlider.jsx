@@ -1,5 +1,5 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
-import { formatBytes } from '../lib/imageProcessor';
+import { formatBytes } from '../lib/processorClient';
 
 /**
  * The signature element. Original on the left, processed on the right,

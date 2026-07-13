@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import DropZone from './DropZone';
 import Settings from './Settings';
 import SplitSlider from './SplitSlider';
-import { decodeFile, processImage, formatBytes } from '../lib/imageProcessor';
+import { decodeFile, processImage, dropImage, formatBytes } from '../lib/processorClient';
 
 const DEFAULT_SETTINGS = {
   format: 'webp',
@@ -33,30 +33,26 @@ export default function Workspace({ tool }) {
     try { localStorage.setItem('keekoo:settings', JSON.stringify(settings)); } catch { /* ignore */ }
   }, [settings]);
 
-  // Add files: decode each once
-  const addFiles = useCallback(async (files) => {
+  // Add files. Decoding happens in a worker; the pixel data stays there.
+  const addFiles = useCallback((files) => {
     const staged = files.map((file) => ({
       id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      file,
       name: file.name,
       srcUrl: URL.createObjectURL(file),
-      srcData: null,
+      decoded: false,
       originalSize: file.size,
       out: null, outSize: 0, status: 'decoding', error: null,
     }));
     setItems((prev) => [...prev, ...staged]);
 
-    for (const it of staged) {
-      try {
-        const { imageData } = await decodeFile(it.file);
-        setItems((prev) => prev.map((p) => p.id === it.id ? { ...p, srcData: imageData, status: 'ready' } : p));
-      } catch (e) {
-        const msg = e.message === 'DECODE_UNSUPPORTED'
-          ? "This format can't be read in-browser. Try a JPG or PNG."
-          : 'Could not read this image.';
-        setItems((prev) => prev.map((p) => p.id === it.id ? { ...p, status: 'error', error: msg } : p));
-      }
-    }
+    // Kick them all off at once — the pool spreads them across cores.
+    staged.forEach((it, i) => {
+      decodeFile(it.id, files[i])
+        .then(() => setItems((prev) => prev.map((p) =>
+          p.id === it.id ? { ...p, decoded: true, status: 'ready' } : p)))
+        .catch((e) => setItems((prev) => prev.map((p) =>
+          p.id === it.id ? { ...p, status: 'error', error: e.message } : p)));
+    });
   }, []);
 
   // A fingerprint of the current output settings. If an item was processed
@@ -71,22 +67,24 @@ export default function Workspace({ tool }) {
 
   // Changes whenever a new image finishes decoding (or one is removed), which
   // is what kicks off processing for freshly-dropped files.
-  const decodedKey = items.filter((it) => it.srcData).map((it) => it.id).join('|');
+  const decodedKey = items.filter((it) => it.decoded).map((it) => it.id).join('|');
 
   // Process anything that is decoded but not yet rendered under these settings.
   useEffect(() => {
     const myJob = ++jobId.current;
-    const stale = items.filter((it) => it.srcData && it.doneKey !== settingsKey);
+    const stale = items.filter((it) => it.decoded && it.doneKey !== settingsKey);
     if (!stale.length) return;
 
-    (async () => {
-      for (const it of stale) {
-        if (jobId.current !== myJob) return; // superseded by newer settings
-        try {
-          const result = await processImage(it.srcData, {
-            tool, format: settings.format, quality: settings.quality,
-            resize: settings.resize, crop: settings.crop,
-          });
+    const opts = {
+      tool, format: settings.format, quality: settings.quality,
+      resize: settings.resize, crop: settings.crop,
+    };
+
+    // Fire them all at the pool. Results land as they finish, so the first
+    // image appears without waiting for the twentieth.
+    stale.forEach((it) => {
+      processImage(it.id, opts)
+        .then((result) => {
           if (jobId.current !== myJob) { URL.revokeObjectURL(result.url); return; }
           setItems((prev) => prev.map((p) => {
             if (p.id !== it.id) return p;
@@ -97,24 +95,30 @@ export default function Workspace({ tool }) {
               status: 'done', doneKey: settingsKey,
             };
           }));
-        } catch {
+        })
+        .catch((e) => {
+          if (jobId.current !== myJob) return;
           setItems((prev) => prev.map((p) => p.id === it.id
-            ? { ...p, status: 'error', error: 'Could not process this image.' }
+            ? { ...p, status: 'error', error: e.message || 'Could not process this image.' }
             : p));
-        }
-      }
-    })();
+        });
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settingsKey, decodedKey]);
 
   const removeItem = (id) => setItems((prev) => {
     const it = prev.find((p) => p.id === id);
     if (it) { URL.revokeObjectURL(it.srcUrl); if (it.out) URL.revokeObjectURL(it.out); }
+    dropImage(id);
     return prev.filter((p) => p.id !== id);
   });
 
   const clearAll = () => {
-    items.forEach((it) => { URL.revokeObjectURL(it.srcUrl); if (it.out) URL.revokeObjectURL(it.out); });
+    items.forEach((it) => {
+      URL.revokeObjectURL(it.srcUrl);
+      if (it.out) URL.revokeObjectURL(it.out);
+      dropImage(it.id);
+    });
     setItems([]);
   };
 

@@ -134,6 +134,12 @@ export default function Settings({ tool, settings, onChange, children }) {
         </p>
       )}
 
+      {settings.format === 'avif' && (
+        <p style={{ fontSize: '12px', color: 'var(--muted)', margin: '-10px 0 20px', lineHeight: 1.5 }}>
+          AVIF makes the smallest files, but takes a few seconds per image.
+        </p>
+      )}
+
       {children}
     </div>
   );

@@ -150,3 +150,8 @@ select {
     grid-template-columns: 1fr !important;
   }
 }
+
+/* Spinner for the "compressing" state */
+@keyframes kk-spin {
+  to { transform: rotate(360deg); }
+}
