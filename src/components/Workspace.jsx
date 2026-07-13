@@ -1,0 +1,296 @@
+import { useState, useEffect, useRef, useCallback } from 'react';
+import DropZone from './DropZone';
+import Settings from './Settings';
+import SplitSlider from './SplitSlider';
+import { decodeFile, processImage, formatBytes } from '../lib/imageProcessor';
+
+const DEFAULT_SETTINGS = {
+  format: 'webp',
+  quality: 80,
+  resize: { mode: 'percentage', scale: 50, width: 800, height: 600 },
+  crop: { aspect: '1:1' },
+};
+
+// Load saved settings (optional persistence)
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem('keekoo:settings');
+    if (raw) return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+  } catch { /* ignore */ }
+  return DEFAULT_SETTINGS;
+}
+
+export default function Workspace({ tool }) {
+  const [items, setItems] = useState([]); // {id, file, name, srcUrl, srcData, originalSize, out, outSize, status, error}
+  const [settings, setSettings] = useState(loadSettings);
+  const [zipping, setZipping] = useState(false);
+  const jobId = useRef(0);
+
+  const bulk = items.length > 1;
+
+  // Persist settings
+  useEffect(() => {
+    try { localStorage.setItem('keekoo:settings', JSON.stringify(settings)); } catch { /* ignore */ }
+  }, [settings]);
+
+  // Add files: decode each once
+  const addFiles = useCallback(async (files) => {
+    const staged = files.map((file) => ({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      file,
+      name: file.name,
+      srcUrl: URL.createObjectURL(file),
+      srcData: null,
+      originalSize: file.size,
+      out: null, outSize: 0, status: 'decoding', error: null,
+    }));
+    setItems((prev) => [...prev, ...staged]);
+
+    for (const it of staged) {
+      try {
+        const { imageData } = await decodeFile(it.file);
+        setItems((prev) => prev.map((p) => p.id === it.id ? { ...p, srcData: imageData, status: 'ready' } : p));
+      } catch (e) {
+        const msg = e.message === 'DECODE_UNSUPPORTED'
+          ? "This format can't be read in-browser. Try a JPG or PNG."
+          : 'Could not read this image.';
+        setItems((prev) => prev.map((p) => p.id === it.id ? { ...p, status: 'error', error: msg } : p));
+      }
+    }
+  }, []);
+
+  // Reprocess all ready items whenever settings or tool change
+  useEffect(() => {
+    const myJob = ++jobId.current;
+    const ready = items.filter((it) => it.status === 'ready' || it.status === 'done');
+    if (!ready.length) return;
+
+    (async () => {
+      for (const it of ready) {
+        if (jobId.current !== myJob) return; // superseded by newer settings
+        try {
+          const result = await processImage(it.srcData, {
+            tool, format: settings.format, quality: settings.quality,
+            resize: settings.resize, crop: settings.crop,
+          });
+          if (jobId.current !== myJob) { URL.revokeObjectURL(result.url); return; }
+          setItems((prev) => prev.map((p) => {
+            if (p.id !== it.id) return p;
+            if (p.out) URL.revokeObjectURL(p.out);
+            return { ...p, out: result.url, outSize: result.size, outExt: result.ext, status: 'done' };
+          }));
+        } catch {
+          setItems((prev) => prev.map((p) => p.id === it.id ? { ...p, status: 'error', error: 'Could not process this image.' } : p));
+        }
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings, tool, items.length]);
+
+  const removeItem = (id) => setItems((prev) => {
+    const it = prev.find((p) => p.id === id);
+    if (it) { URL.revokeObjectURL(it.srcUrl); if (it.out) URL.revokeObjectURL(it.out); }
+    return prev.filter((p) => p.id !== id);
+  });
+
+  const clearAll = () => {
+    items.forEach((it) => { URL.revokeObjectURL(it.srcUrl); if (it.out) URL.revokeObjectURL(it.out); });
+    setItems([]);
+  };
+
+  const baseName = (name) => name.replace(/\.[^.]+$/, '');
+
+  const downloadOne = (it) => {
+    if (!it.out) return;
+    const a = document.createElement('a');
+    a.href = it.out;
+    a.download = `${baseName(it.name)}.${it.outExt}`;
+    document.body.appendChild(a); a.click(); a.remove();
+  };
+
+  const downloadZip = async () => {
+    setZipping(true);
+    try {
+      const [{ default: JSZip }, { saveAs }] = await Promise.all([
+        import('jszip'),
+        import('file-saver'),
+      ]);
+      const zip = new JSZip();
+      const done = items.filter((it) => it.out);
+      const used = {};
+      for (const it of done) {
+        const blob = await fetch(it.out).then((r) => r.blob());
+        let fname = `${baseName(it.name)}.${it.outExt}`;
+        if (used[fname]) fname = `${baseName(it.name)}-${used[fname]++}.${it.outExt}`;
+        else used[fname] = 1;
+        zip.file(fname, blob);
+      }
+      const content = await zip.generateAsync({ type: 'blob' });
+      saveAs(content, 'keekoo-images.zip');
+    } finally {
+      setZipping(false);
+    }
+  };
+
+  // Totals
+  const totalOrig = items.reduce((s, it) => s + it.originalSize, 0);
+  const totalOut = items.reduce((s, it) => s + (it.outSize || 0), 0);
+  const savedPct = totalOrig > 0 && totalOut > 0 ? Math.round(((totalOrig - totalOut) / totalOrig) * 100) : 0;
+  const anyDone = items.some((it) => it.out);
+
+  if (items.length === 0) {
+    return (
+      <>
+        <DropZone onFiles={addFiles} />
+        <p style={{ textAlign: 'center', fontSize: '13px', color: 'var(--muted)', marginTop: '16px' }}>
+          Everything runs in your browser. Your images never leave your device.
+        </p>
+      </>
+    );
+  }
+
+  return (
+    <div>
+      {/* Hero savings stat — the payoff, made loud */}
+      <div style={{
+        display: 'flex', alignItems: 'flex-end', gap: '14px',
+        flexWrap: 'wrap', marginBottom: '22px',
+      }}>
+        <div>
+          <div style={{
+            fontSize: '12px', color: 'var(--muted)', letterSpacing: '0.06em',
+            textTransform: 'uppercase', marginBottom: '6px', fontWeight: 600,
+          }}>
+            {savedPct > 0 ? 'You saved' : 'Processing'}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px', flexWrap: 'wrap' }}>
+            <span className="mono" style={{
+              fontSize: 'clamp(40px, 9vw, 56px)', fontWeight: 700, color: 'var(--brand)',
+              lineHeight: 0.9, letterSpacing: '-0.04em',
+            }}>
+              {savedPct > 0 ? `${savedPct}%` : '—'}
+            </span>
+            <span className="mono" style={{ fontSize: '15px', color: 'var(--muted)' }}>
+              {formatBytes(totalOrig)} → {totalOut ? formatBytes(totalOut) : '…'}
+              {bulk && ` · ${items.length} images`}
+            </span>
+          </div>
+        </div>
+        <span style={{
+          marginLeft: 'auto', background: 'var(--brand-soft)', color: 'var(--brand-ink)',
+          fontSize: '12px', fontWeight: 600, padding: '7px 13px', borderRadius: '999px',
+        }}>
+          Never left your device
+        </span>
+      </div>
+
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'minmax(220px, 250px) 1fr',
+        gap: '18px',
+        alignItems: 'start',
+      }} className="ws-grid">
+        <div>
+          <Settings tool={tool} settings={settings} onChange={setSettings}>
+            {bulk ? (
+              <button onClick={downloadZip} disabled={!anyDone || zipping} style={btn('solid')}>
+                {zipping ? 'Zipping…' : 'Download all (.zip)'}
+              </button>
+            ) : (
+              <button onClick={() => downloadOne(items[0])} disabled={!anyDone} style={btn('solid')}>
+                Download
+              </button>
+            )}
+            <button onClick={clearAll} style={{ ...btn('ghost'), marginTop: '8px' }}>Clear</button>
+          </Settings>
+
+          <div style={{ marginTop: '14px' }}>
+            <DropZone onFiles={addFiles} compact />
+          </div>
+        </div>
+
+        <div>
+          {bulk ? (
+            <BulkGrid items={items} onRemove={removeItem} onDownload={downloadOne} />
+          ) : (
+            <SingleView item={items[0]} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SingleView({ item }) {
+  if (item.status === 'error') return <ErrorCard message={item.error} />;
+  if (!item.out) return <Skeleton />;
+  return (
+    <SplitSlider
+      beforeUrl={item.srcUrl}
+      afterUrl={item.out}
+      beforeSize={item.originalSize}
+      afterSize={item.outSize}
+    />
+  );
+}
+
+function BulkGrid({ items, onRemove, onDownload }) {
+  return (
+    <div style={{
+      display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '12px',
+    }}>
+      {items.map((it) => (
+        <div key={it.id} style={{
+          position: 'relative', borderRadius: '14px', overflow: 'hidden',
+          border: '0.5px solid var(--line)', background: 'var(--card)',
+        }}>
+          {it.status === 'error' ? (
+            <div style={{ height: '130px', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '10px', fontSize: '11px', color: 'var(--muted)', textAlign: 'center' }}>
+              {it.error}
+            </div>
+          ) : (
+            <img src={it.out || it.srcUrl} alt={it.name} style={{ width: '100%', height: '130px', objectFit: 'cover', display: 'block', opacity: it.out ? 1 : 0.5 }} />
+          )}
+
+          <button onClick={() => onRemove(it.id)} aria-label="Remove" style={{
+            position: 'absolute', top: '6px', right: '6px', width: '26px', height: '26px',
+            border: 'none', borderRadius: '6px', background: 'rgba(0,0,0,0.6)', color: '#fff',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px',
+          }}>✕</button>
+
+          {it.out && (
+            <div style={{ padding: '8px 10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span className="mono" style={{ fontSize: '11px' }}>
+                {formatBytes(it.outSize)}
+                {it.originalSize > it.outSize && (
+                  <span style={{ color: 'var(--savings)' }}> −{Math.round((1 - it.outSize / it.originalSize) * 100)}%</span>
+                )}
+              </span>
+              <button onClick={() => onDownload(it)} aria-label="Download" style={{
+                border: 'none', background: 'none', color: 'var(--ink)', fontSize: '14px', padding: 0,
+              }}>⬇</button>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Skeleton() {
+  return <div style={{ width: '100%', aspectRatio: '4/3', maxHeight: '520px', background: 'var(--soft)', borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--muted)', fontSize: '13px' }}>Processing…</div>;
+}
+
+function ErrorCard({ message }) {
+  return <div style={{ width: '100%', aspectRatio: '4/3', maxHeight: '520px', background: 'var(--card)', border: '0.5px solid var(--line)', borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--muted)', fontSize: '14px', padding: '24px', textAlign: 'center' }}>{message}</div>;
+}
+
+function btn(kind) {
+  const base = {
+    width: '100%', fontSize: '14px', fontWeight: 600, padding: '14px',
+    borderRadius: '12px', minHeight: 'var(--tap)',
+  };
+  return kind === 'solid'
+    ? { ...base, background: 'var(--brand)', color: '#fff', border: 'none' }
+    : { ...base, background: 'transparent', color: 'var(--muted)', border: '1px solid var(--line)' };
+}
