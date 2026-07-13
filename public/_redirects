@@ -1,1 +1,7 @@
-/*  /index.html  200
+# Pre-rendered tool pages are real files on disk (dist/tools/<slug>/index.html).
+# Cloudflare Pages serves matching static assets BEFORE applying these rules,
+# so those URLs resolve to their own HTML with correct titles/meta.
+# Everything else (unknown paths, /, /tools) falls back to the SPA shell.
+/          /tools/image-compressor    302
+/tools     /tools/image-compressor    302
+/*         /index.html                200
