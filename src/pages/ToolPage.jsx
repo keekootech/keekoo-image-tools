@@ -2,6 +2,7 @@ import { useEffect, lazy, Suspense } from 'react';
 import { useParams, Navigate, Link, useLocation } from 'react-router-dom';
 import { TOOL_PAGES, SLUGS } from './toolConfig';
 import Workspace from '../components/Workspace';
+import ToolCards from '../components/ToolCards';
 // Lazy: pdf-lib + pdf.js are heavy (~900 KB). Only load them on PDF pages,
 // so someone compressing an image never downloads them.
 const PdfWorkspace = lazy(() => import('../components/PdfWorkspace'));
@@ -20,13 +21,6 @@ const PDF_NAV = [
   ['compress-pdf', 'Compress'],
   ['pdf-to-jpg', 'To JPG'],
   ['jpg-to-pdf', 'From JPG'],
-];
-
-// Every page, for the crawlable cross-links at the foot of the copy.
-const CROSSLINKS = [
-  ...IMAGE_NAV,
-  ['bulk-image-compressor', 'Compress in bulk'],
-  ...PDF_NAV.map(([s, l]) => [s, `${l} PDF`]),
 ];
 
 export default function ToolPage() {
@@ -99,16 +93,9 @@ export default function ToolPage() {
               {para}
             </p>
           ))}
-          <div style={{ marginTop: '24px', fontSize: '14px' }}>
-            <span style={{ color: 'var(--muted)' }}>Also try: </span>
-            {CROSSLINKS.filter(([s]) => s !== slug).map(([s, label], i, arr) => (
-              <span key={s}>
-                <Link to={`/tools/${s}`} style={{ color: 'var(--ink)' }}>{label}</Link>
-                {i < arr.length - 1 ? ' · ' : ''}
-              </span>
-            ))}
-          </div>
         </section>
+
+        <ToolCards currentSlug={slug} />
       </main>
 
       <Wave />
